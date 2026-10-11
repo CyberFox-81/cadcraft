@@ -105,6 +105,11 @@ impl Inbox {
         }
     }
 
+    /// A file from elsewhere refused before it was read (`error` says why).
+    pub fn refuse(&self, error: String) {
+        self.push(Err(error));
+    }
+
     fn push(&self, upload: Upload) {
         let mut files = self.files.take();
         files.push(upload);

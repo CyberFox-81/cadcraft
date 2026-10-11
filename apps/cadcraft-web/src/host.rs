@@ -21,6 +21,9 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use web_sys::js_sys;
 
+/// Longest file name taken from the parent page.
+const MAX_NAME_CHARS: usize = 255;
+
 thread_local! {
     /// The bridge [`deliver`] posts through (the engine's hook is a plain `fn`).
     static BRIDGE: RefCell<Option<Bridge>> = const { RefCell::new(None) };
@@ -74,10 +77,17 @@ impl Bridge {
             if string(&data, "type").as_deref() != Some("cadcraft:open") {
                 return;
             }
-            let name = string(&data, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Drawing.dxf".to_string());
-            if let Some(bytes) = bytes(&data) {
-                inbox.receive(name, bytes);
+            let name = string(&data, "name")
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| n.chars().take(MAX_NAME_CHARS).collect())
+                .unwrap_or_else(|| "Drawing.dxf".to_string());
+            // Refuse an oversized drawing before copying it into the app's memory.
+            let Some(array) = byte_array(&data) else { return };
+            if let Some(e) = CadApp::open_size_error(&name, u64::from(array.length())) {
+                inbox.refuse(e);
+                return;
             }
+            inbox.receive(name, array.to_vec());
         });
         if self.window.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref()).is_ok() {
             // The listener lives as long as the page.
@@ -127,13 +137,13 @@ fn string(data: &JsValue, key: &str) -> Option<String> {
     js_sys::Reflect::get(data, &JsValue::from_str(key)).ok()?.as_string()
 }
 
-/// `bytes` as an `ArrayBuffer` or `Uint8Array`.
-fn bytes(data: &JsValue) -> Option<Vec<u8>> {
+/// `bytes` (an `ArrayBuffer` or `Uint8Array`) as a view, not yet copied.
+fn byte_array(data: &JsValue) -> Option<js_sys::Uint8Array> {
     let bytes = js_sys::Reflect::get(data, &JsValue::from_str("bytes")).ok()?;
     if let Some(array) = bytes.dyn_ref::<js_sys::Uint8Array>() {
-        Some(array.to_vec())
+        Some(array.clone())
     } else if bytes.is_instance_of::<js_sys::ArrayBuffer>() {
-        Some(js_sys::Uint8Array::new(&bytes).to_vec())
+        Some(js_sys::Uint8Array::new(&bytes))
     } else {
         None
     }
